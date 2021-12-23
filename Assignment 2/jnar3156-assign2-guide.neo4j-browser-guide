@@ -1,0 +1,388 @@
+<article class="guide">
+  <carousel class="deck container-fluid">
+  
+    <slide class="row-fluid">
+      
+      <div class="col-sm-4">
+        <h3>Graph Building</h3>
+        <p>
+          The first query loads all the requirement information, that would later be required when loading the degrees into the database.  The requirements will be represented as a node of its own, with the label <code>Requirement</code>, and will then be linked to the degree to represent each degrees' requirements of student to complete.  This is contained in the <code>jnar3156-requirements.json</code> file.
+        </p>
+        <p>
+          The second query then loads the degree information to the database.  The degrees are represented as a node with the label <code>Degree</code>, and contains the degree's code, name, along with its completion requirements (modelled through the relationship with the Requirement nodes using the type <code>REQUIRES</code>).  The degree data is contained within the <code>jnar3156-degrees.json</code> file.
+        </p>
+        <p>
+          The last loading query will load all necessary information relating to the course units available (represented with the label <code>Unit</code>), along with pre-requisite and prohibition requirements that it might have.  These relationships will be modelled within the graph between Unit nodes with types <code>PREREQUISITE</code> and <code>PROHIBITED</code> respectively.  All of which are contained within the <code>jnar3156-units.json</code> file.
+        </p>
+	    </div>
+	    
+      <div class="col-sm-8">
+        <figure>
+          <pre class="pre-scrollable code runnable">
+    CALL apoc.load.json("file:///jnar3156-requirements.json")
+      YIELD value
+      MERGE (r:Requirement {name: value.name})
+      SET r.level = value.level
+      SET r.cp = value.cp
+      RETURN r
+          </pre>
+          <figcaption>Load the requirements of the degrees onto the database</figcaption>
+        </figure>
+
+        <figure>
+          <pre class="pre-scrollable code runnable">
+    CALL apoc.load.json("file:///jnar3156-degrees.json")
+      YIELD value
+      MERGE (d:Degree {code: value.code})
+      SET d.name = value.name
+      WITH d, value
+      UNWIND value.requirements AS requirement
+      MATCH (r:Requirement {name: requirement})
+      MERGE (d)-[:REQUIRES]->(r)
+      RETURN d, r
+          </pre>
+          <figcaption>Load the available degrees to the database</figcaption>
+        </figure>
+
+        <figure>
+          <pre class="pre-scrollable code runnable">
+    CALL apoc.load.json("file:///jnar3156-units.json")
+      YIELD value
+      MERGE (c:Unit {code: value.code})
+      SET c.title = value.title
+      SET c.cp = value.cp
+      SET c.level = value.level
+      WITH c, value
+      CALL {
+          WITH c, value
+          UNWIND value.prerequisites AS prerequisite
+          MERGE (pre:Unit {code: prerequisite.code})
+          MERGE (c)-[r:PREREQUISITE]->(pre)
+          SET r.alternate = prerequisite.alternate
+          RETURN true
+      
+          UNION
+      
+          WITH c, value
+          UNWIND value.prohibited AS prohibit
+          MERGE (pro:Unit {code: prohibit.code})
+          MERGE (c)-[:PROHIBITED]->(pro)
+          RETURN true
+      }
+      RETURN DISTINCT("Import complete") AS Status;
+          </pre>
+          <figcaption>Load course unit information to graph database</figcaption>
+        </figure>
+
+        </div>
+    </slide>
+    
+
+    <slide class="row-fluid">
+      <div class="col-sm-12">
+        <h3>Graph Inspection</h3>
+      </div>
+
+      <div class="col-sm-12">
+        <div class="col-sm-6">
+          <p>
+            The graph contains units with no prerequisites.
+          </p>
+          <figure>
+            <pre class="pre-scrollable code runnable">
+    MATCH (u:Unit)
+      WHERE NOT EXISTS {
+          MATCH (u)-[:PREREQUISITE]->()
+      }
+      RETURN u
+            </pre>
+            <figcaption>1) Units with no prerequisite</figcaption>
+          </figure>
+        </div>
+
+        <div class="col-sm-6">
+          <p>
+            The graph contains units with a prohibition list.
+          </p>
+          <figure>
+            <pre class="pre-scrollable code runnable">
+    MATCH (u:Unit)-[p:PROHIBITED]->()
+      RETURN u, p
+            </pre>
+            <figcaption>2) Units that has a prohibition list</figcaption>
+          </figure> 
+        </div>
+      </div>
+
+      <div class="col-sm-12">
+        <div class="col-sm-6">
+          <p>
+            Units with a list of prerequisites, however the prerequisite units it has are only linked by OR operators.  This means that the student can take any of the prerequisites to be eligible for the unit.  Note that the prerequisite units are also included in the graph output, to make it easier to see which prerequisite units are joined by the OR operator.  Here, it is COMP2005 and COMP2006 which matches this criteria, with the remaining nodes displayed being the prerequisite units of those 2.
+          </p>
+          <figure>
+            <pre class="pre-scrollable code runnable">
+    MATCH (c:Unit)-[pre:PREREQUISITE]->(p:Unit)
+      WITH c, collect(pre.alternate) AS alternates, collect(p.code) AS prerequisite_units
+      WHERE size(alternates) > 0
+          AND ALL(alternate in alternates WHERE size(alternate)=size(prerequisite_units)-1)
+      RETURN (c)-[:PREREQUISITE]->(:Unit)
+            </pre>
+            <figcaption>3) Units with a list of prerequisite units, linked by OR operators</figcaption>
+          </figure>
+        </div>
+
+        <div class="col-sm-6">
+          <figure>
+            <p>
+              Units with a list of prerequisites, however, the prerequisite units in this case are linked with both an AND and OR operators.  Here, you'll see that it returns DATA3001 and STAT3001 as the courses matching this criteria, with the remaining nodes being the prerequisite units of those two.
+            </p>
+            <pre class="pre-scrollable code runnable">
+    MATCH (c:Unit)-[pre:PREREQUISITE]->(p:Unit)
+      WITH c, collect(pre.alternate) AS alternates, collect(p.code) AS prerequisite_units
+      WHERE size(alternates) > 0
+          AND ANY(alternate in alternates WHERE size(alternate)<>size(prerequisite_units)-1)
+      RETURN (c)-[:PREREQUISITE]->(:Unit)
+            </pre>
+            <figcaption>4) Units with a list of prerequisite units, linked by AND and OR operators</figcaption>
+          </figure>
+        </div>
+      </div>
+    </slide>
+
+    <slide class="row-fluid">
+      <div class="col-sm-3">
+        <h3>Prohibition Rule</h3>
+        <p>
+          Inserting a student into the graph database using a node of label <strong><code>Person</code></strong>.  The query to the right will then perform a check if the student is eligible to enrol for a given unit, entered below, based on the unit's prohibition list.
+        </p>
+        <p>
+          Enter unit code into the field below, to evaluate Jesse's elegibility - based on the unit's prohibition list
+        </p>
+        <p>
+          <label>Unit Code: </label>
+          <input value-for="unit_code" id="unit_code" class="form-control" value="COMP3001" size="25">
+        </p>
+        <p>
+          Using the unit code <code>COMP3001</code> demonstrates the query's ability to determine the student being eligible to take the unit, since Jesse has not taken any units within its prohibition list such as COMP3004.
+          In contrary, using the unit code <code>COMP1009</code> demonstrates the query's ability to detect the student being ineligible to enroll to it, since Jesse has already taken COMP1008, which is in the prohibit list along with COMP1003.
+        </p>
+      </div>
+
+      <div class="col-sm-9">
+        <figure>
+          <pre class="pre-scrollable code runnable" >
+    UNWIND [
+    "STAT1001", "COMP1001", "COMP1002", "COMP1004", "COMP1005", "COMP1006", "COMP1007", "COMP1008",
+    "STAT2001", "COMP2001", "COMP2002", "COMP2003", "COMP2004", "COMP2006",
+    "STAT3002", "COMP3005", "COMP3006"] AS finished_units
+      MERGE (student:Person {name: "Jesse"})
+      SET student.current_degree = "BData"
+      WITH student, finished_units
+      MATCH (d:Degree {code: student.current_degree})
+      MERGE (student)-[:STUDIES]->(d)
+      WITH student, finished_units
+      MATCH (unit:Unit {code: finished_units})
+      MERGE (student)-[:ENROLLED_IN {status: "Passed"}]->(unit)
+      RETURN finished_units AS Unit, "Success" AS Insert
+          </pre>
+          <figcaption>Insert student Jesse using Person node</figcaption>
+        </figure>
+      
+        <figure>
+          <pre class="pre-scrollable code runnable" >
+    MATCH (:Unit {code: '<span value-key="unit_code">COMP3001</span>'})-[:PROHIBITED]->(p:Unit)
+      WITH COLLECT(p.code) as prohibited_units
+      RETURN NOT ANY(prohibited_unit in prohibited_units WHERE EXISTS((:Person {name: "Jesse"})-[:ENROLLED_IN]->(:Unit {code: prohibited_unit}))) AS Is_Allowed
+          </pre>
+          <figcaption>Evaluate enrollment eligibility based on prohibition rule for the unit for the student Jesse</figcaption>
+        </figure>
+      </div>
+    </slide>
+
+    <slide class="row-fluid">
+      <div class="col-sm-4">
+        <h3>Prerequisite Rule</h3>
+        <p>
+          The queries below will demonstrate the different features within the graph database structure, allowing to determine the different scenarios with regards to eligiblity based on the unit's prerequisite rule.
+        </p>
+        <p>
+          <label>Unit Code: </label>
+          <input value-for="unit_code" id="unit_code" class="form-control" value="COMP2005" size="25">
+        </p>
+        <p>
+          Setting the unit code to <code>COMP2005</code> shows the student satisfying the prerequisite rule for the unit, as Jesse has already taken COMP1008; despite not having done COMP1003 or COMP1009, since the unit's prerequisite rule are linked with OR operators.
+        </p>
+        <p>
+          Likewise, setting the unit code to <code>STAT3001</code> shows that Jesse also satisfies the prerequisite rule, which requires the student to have passed (STAT2001 or COMP2002) AND (COMP2005 or COMP1007).  In this instance, Jesse has passed STAT2001, COMP2002 and COMP1007, so not having done COMP2005 does not matter as passing COMP1007 already covers that part of the condition.
+        </p>
+        <p>
+          In contrary, Jesse wants to enroll in <code>DATA3001</code> but is unable to do so since he is only able to partially fulfill the prerequisites for the course.  The unit requires that (STAT3001 or STAT3002) AND (COMP3002 or COMP3003) have been done by the student, however, Jesse has only fulfilled the first part of the requirement having done STAT3002, but has not done either COMP3002 or COMP3003.
+        </p>
+      </div>
+
+      <div class="col-sm-8">
+        <figure>
+          <pre class="pre-scrollable code runnable">
+    MATCH (s:Person {name: "Jesse"}), (c:Unit {code: '<span value-key="unit_code">COMP2005</span>'})-[pre:PREREQUISITE]->(p:Unit)
+    WITH
+        (
+            (
+                EXISTS(pre.alternate) 
+                AND ANY(x in pre.alternate WHERE EXISTS((s)-[:ENROLLED_IN]->(:Unit {code: x})))
+            ) OR
+            EXISTS((s)-[:ENROLLED_IN]->(p))
+        ) as is_met
+    RETURN ALL(x IN COLLECT(is_met) WHERE x = TRUE) AS is_prerequisite_met
+          </pre>
+          <figcaption>Query to determine prerequisite eligibility of a student for a unit, given different prerequisite requirements</figcaption>
+        </figure>
+      </div>
+    </slide>
+
+    <slide class="row-fluid">
+      <div class="col-sm-3">
+        <h3>Graduation Checking</h3>
+        <p>
+          Check if the student meets the requirements of the degree to graduate.  The output of the query will provide a boolean value based on whether the student has met each requirement of the degree.
+        </p>
+        <p>
+          Inser the new student <code>James</code> into the graph first, in order to evaluate his eligibility to graduate with his degree.
+        </p>
+        <p>
+          <label>Student name: </label>
+          <input value-for="student_name" id="student_name" class="form-control" value="James" size="25">
+        </p>
+        <p>
+          Once run, the query output suggests that James has actually met the requirement for the total number of credit points required for the degree; however, he hasn't been able to meet the requirement of obtaining 48 credit points for level 2 units.
+        </p>
+      </div>
+
+      <div class="col-sm-9">
+        <figure>
+          <pre class="pre-scrollable code runnable">
+    UNWIND [
+    "STAT1001", "COMP1001", "COMP1002", "COMP1004", "COMP1005", "COMP1006", "COMP1007", "COMP1008", "COMP1010",
+    "STAT2001", "COMP2001", "COMP2002", "COMP2003", "COMP2004", "COMP2006", "COMP2007",
+    "STAT3002", "COMP3002", "COMP3003", "COMP3004", "COMP3005", "COMP3006", "DATA3001"] AS finished_units
+      MERGE (student:Person {name: "James"})
+      SET student.current_degree = "BData"
+      WITH student, finished_units
+      MATCH (d:Degree {code: student.current_degree})
+      MERGE (student)-[:STUDIES]->(d)
+      WITH student, finished_units
+      MATCH (unit:Unit {code: finished_units})
+      MERGE (student)-[:ENROLLED_IN {status: "Passed"}]->(unit)
+      RETURN finished_units AS Unit, "Success" AS Insert
+         </pre>
+         <figcaption>Inserting new student James into the graph</figcaption>
+        </figure>
+
+        <figure>
+            <pre class="pre-scrollable code runnable">
+    MATCH (p:Person {name: '<span value-key="student_name">James</span>'})-[:STUDIES]->(d:Degree)-[:REQUIRES]->(r)
+      WITH p, r
+      OPTIONAL MATCH (p)-[:ENROLLED_IN]->(c:Unit {level: r.level})
+      WITH p, r,
+          CASE
+              WHEN r.level=1000 THEN SUM(c.cp)
+              WHEN r.level=2000 THEN SUM(c.cp)
+              WHEN r.level=3000 THEN SUM(c.cp)
+              WHEN r.level="any" THEN SUM(c.cp)
+          END AS level_cp
+      MATCH (p)-[:ENROLLED_IN]->(c:Unit)
+      RETURN r.name,
+          CASE
+              WHEN r.level=1000 THEN level_cp >= r.cp
+              WHEN r.level=2000 THEN level_cp >= r.cp
+              WHEN r.level=3000 THEN level_cp >= r.cp
+              WHEN r.level="any" THEN SUM(c.cp) >= r.cp
+          END AS is_requirement_met
+        </pre>
+        <figcaption>Check the graduation eligibility of the student, based on the degree's requirements</figcaption>
+        </figure>
+      </div>
+    </slide>
+
+    <slide class="row-fluid">
+      <div class="col-sm-6">
+        <h3>Indirect Prerequisite</h3>
+        <p>
+          The following query finds the indirect 1000 level prerequisite of a given unit, and prints out the prerequisite chain from the given unit to the 1000 level indirect prerequisite units.
+        </p>
+        <p>
+          <label>Unit code: </label>
+          <input value-for="unit_code" id="unit_code" class="form-control" value="STAT3001" size="25">
+        </p>
+        <p>
+          Placing the unit code <code>STAT3001</code> shows us the indirect prerequisite chain leading from the unit itself to the level 1000 units.  The maximum chain length for this unit is 2, with the course itself having the direct prerequisites of STAT2001, COMP2002, COMP2005 and COMP1007.  Because we are only interested in returning the path to level 1000 units which are indirect prerequisites, note that <strong>COMP1007</strong> is excluded from the output of this query since that is a direct prerequisite of STAT3001.  Instead the outputs are the prerequisites of the direct prerequisite.
+        </p>
+        <p>
+          Using the unit code <code>DATA3001</code>, we can see that the maximum chain length is longer than we have seen for STAT3001.  Here, the max chain length is 3, with DATA3001 having the prerequisite of other level 3000 units, which in-turn generally has a chain length of 2 going to the level 1000 prerequisite units.
+        </p>
+      </div>
+
+      <div class="col-sm-6">
+        <figure>
+          <pre class="pre-scrollable code runnable">
+    MATCH (:Unit {code: '<span value-key="unit_code">STAT3001</span>'})-[r:PREREQUISITE*2..]->(pre:Unit {level: 1000})
+      RETURN (:Unit {code: '<span value-key="unit_code">STAT3001</span>'})-[r:PREREQUISITE*..]->(pre)
+         </pre>
+         <figcaption>Find the 1000 level indirect prerequisites of a unit</figcaption>
+        </figure>
+      </div>
+    </slide>
+
+    <slide class="row-fluid">
+      <div class="col-sm-6">
+        <h3>Foundational Unit</h3>
+        <p>
+          The objective of this query, is to return the units which are referenced to the most as a direct or indirect prerequisite of other units.
+        </p>
+        <p>
+          Moreover, it is also important to note that each unit will need to ensure that only the distinct direct & indirect prerequisites are returned, in order to avoid double counting in the event that more than one of its prerequisite units also have the same prerequisites.  An example of this is <code>STAT1001</code> being referenced as a direct & indirect prerequisite by STAT2001, STAT3001, STAT3002 and DATA3001.  Therefore, the result of the output should only be 4, since that is the number of units which have it as a direct & indirect prerequisite.  Without the use of the DISTINCT operator within the query, the result would have returned 5, since DATA3001 would reference STAT1001 twice, given that two of its direct prerequisites have indirect prerequisites to STAT1001.
+        </p>
+        <p>
+          Note how the unit <code>COMP1008</code> appears at the top of the output, meaning that it has the highest number of references based on the count of direct or indirect prerequisite it is listed as.  Fundamentally, this means that for a student performing this course, it will allow them to undertake more possible options of courses as they progress through their degree, as this unit is being referenced the most by other units as a prerequisite.
+        </p>
+        <p>
+          There are also units such as <code>COMP1005</code> with a number of reference of just 1.  This means that this unit is just referenced once as a direct prerequisite of another unit, which in this case is COMP2003.
+        </p>
+      </div>
+
+      <div class="col-sm-6">
+        <figure>
+          <pre class="pre-scrollable code runnable">
+    MATCH (u:Unit)-[:PREREQUISITE*..]->(pre:Unit)
+      WITH u, COLLECT(DISTINCT pre.code) AS pre
+      UNWIND pre as prerequisite_codes
+      WITH u, prerequisite_codes
+      RETURN prerequisite_codes, COUNT(*) AS Num_Referenced
+      ORDER BY Num_Referenced DESC
+         </pre>
+         <figcaption>Find the foundational units, which are the units being referenced the most as prerequisites of other units</figcaption>
+        </figure>
+      </div>
+    </slide>
+
+    <slide class="row-fluid">
+      <div class="col-sm-3">
+        <h3>Clear the Graph</h3>
+        <p>
+          Remove all the nodes and their respective relationships, which have been created from this guide.
+        </p>
+      </div>
+
+      <div class="col-sm-9">
+        <figure>
+          <pre class="pre-scrollable code runnable">
+    MATCH (n)
+      WHERE n:Unit or n:Person or n:Degree or n:Requirement
+      DETACH DELETE n
+         </pre>
+         <figcaption>Perform deletion of nodes and relationships within the graph</figcaption>
+        </figure>
+      </div>
+    </slide>
+  
+  </carousel>
+</article>
